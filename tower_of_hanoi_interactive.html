@@ -1,0 +1,218 @@
+
+<style>
+  #hanoi-root { padding: 1rem 0; font-family: var(--font-mono); }
+  .controls { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .controls label { font-size: 13px; color: var(--color-text-secondary); }
+  .btn { font-size: 13px; padding: 6px 16px; border-radius: var(--border-radius-md); border: 0.5px solid var(--color-border-secondary); background: transparent; color: var(--color-text-primary); cursor: pointer; }
+  .btn:hover { background: var(--color-background-secondary); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-primary { background: var(--color-background-info); color: var(--color-text-info); border-color: transparent; }
+  .stats { display: flex; gap: 12px; margin-bottom: 1.5rem; }
+  .stat { background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 10px 16px; font-size: 13px; color: var(--color-text-secondary); }
+  .stat span { font-size: 18px; font-weight: 500; color: var(--color-text-primary); display: block; }
+  #canvas-wrap { background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 12px; margin-bottom: 1.5rem; }
+  #log { max-height: 180px; overflow-y: auto; font-size: 12px; color: var(--color-text-secondary); border-top: 0.5px solid var(--color-border-tertiary); padding-top: 12px; }
+  .log-entry { padding: 2px 0; }
+  .log-entry.active { color: var(--color-text-primary); font-weight: 500; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px; margin-right: 4px; }
+  .tag-rec { background: var(--color-background-info); color: var(--color-text-info); }
+  .tag-iter { background: #EAF3DE; color: #3B6D11; }
+  .tag-base { background: var(--color-background-warning); color: var(--color-text-warning); }
+</style>
+
+<div id="hanoi-root">
+  <h2 class="sr-only">Tower of Hanoi interactive visualiser — move disks from peg A to peg C using recursion</h2>
+
+  <div class="controls">
+    <label>Disks</label>
+    <input type="range" min="2" max="6" value="3" id="disk-slider" style="width:120px;">
+    <span id="disk-count" style="font-size:14px;font-weight:500;min-width:12px;">3</span>
+    <button class="btn btn-primary" id="btn-start">Start</button>
+    <button class="btn" id="btn-step" disabled>Step →</button>
+    <button class="btn" id="btn-auto" disabled>Auto play</button>
+    <button class="btn" id="btn-reset">Reset</button>
+    <select id="speed-sel" style="font-size:13px;padding:6px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:transparent;color:var(--color-text-primary);">
+      <option value="600">Slow</option>
+      <option value="300" selected>Normal</option>
+      <option value="80">Fast</option>
+    </select>
+  </div>
+
+  <div class="stats">
+    <div class="stat">Move<span id="s-move">0</span></div>
+    <div class="stat">Total<span id="s-total">7</span></div>
+    <div class="stat">Depth<span id="s-depth">0</span></div>
+    <div class="stat">Call stack<span id="s-stack">0</span></div>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="hcanvas" width="660" height="200"></canvas>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script>
+const COLORS = ["#534AB7","#D85A30","#1D9E75","#D4537E","#BA7517","#185FA5"];
+let pegs, moves, moveIdx, autoTimer, N;
+const canvas = document.getElementById('hcanvas');
+const ctx = canvas.getContext('2d');
+const slider = document.getElementById('disk-slider');
+const diskCountEl = document.getElementById('disk-count');
+const btnStart = document.getElementById('btn-start');
+const btnStep = document.getElementById('btn-step');
+const btnAuto = document.getElementById('btn-auto');
+const btnReset = document.getElementById('btn-reset');
+const speedSel = document.getElementById('speed-sel');
+const log = document.getElementById('log');
+const sMov = document.getElementById('s-move');
+const sTot = document.getElementById('s-total');
+const sDep = document.getElementById('s-depth');
+const sSta = document.getElementById('s-stack');
+
+function isDark() {
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function pegX(i) { return 110 + i * 220; }
+const BASE_Y = 180, PEG_H = 140, DISK_H = 18, PEG_W = 6;
+
+function diskW(d) { return 30 + d * 22; }
+
+function drawScene() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const textColor = isDark() ? '#ccc' : '#555';
+  const pegColor = isDark() ? '#666' : '#bbb';
+
+  // Base line
+  ctx.fillStyle = pegColor;
+  ctx.fillRect(20, BASE_Y, 620, 3);
+
+  const labels = ['A', 'B', 'C'];
+  for (let p = 0; p < 3; p++) {
+    const x = pegX(p);
+    ctx.fillStyle = pegColor;
+    ctx.fillRect(x - PEG_W/2, BASE_Y - PEG_H, PEG_W, PEG_H);
+    ctx.fillStyle = textColor;
+    ctx.font = "bold 15px var(--font-mono, monospace)";
+    ctx.textAlign = "center";
+    ctx.fillText(labels[p], x, BASE_Y + 20);
+
+    const stack = pegs[p];
+    stack.forEach((disk, idx) => {
+      const w = diskW(disk);
+      const y = BASE_Y - (idx + 1) * DISK_H - 2;
+      const x0 = x - w / 2;
+      ctx.fillStyle = COLORS[(disk - 1) % COLORS.length];
+      ctx.beginPath();
+      ctx.roundRect(x0, y, w, DISK_H - 2, 4);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 11px var(--font-mono, monospace)";
+      ctx.textAlign = "center";
+      ctx.fillText(disk, x, y + DISK_H - 6);
+    });
+  }
+}
+
+function buildMoves(n, src, tgt, aux, depth) {
+  if (n === 0) return;
+  buildMoves(n - 1, src, aux, tgt, depth + 1);
+  moves.push({ disk: n, from: src, to: tgt, depth });
+  buildMoves(n - 1, aux, tgt, src, depth + 1);
+}
+
+function init() {
+  N = parseInt(slider.value);
+  pegs = [[], [], []];
+  for (let d = N; d >= 1; d--) pegs[0].push(d);
+  moves = [];
+  moveIdx = 0;
+  buildMoves(N, 0, 2, 1, 0);
+  drawScene();
+  updateStats();
+  log.innerHTML = '';
+  sTot.textContent = moves.length;
+  btnStep.disabled = false;
+  btnAuto.disabled = false;
+  btnStart.disabled = true;
+  slider.disabled = true;
+  addLog('▶ Started. ' + N + ' disks — ' + moves.length + ' total moves.', 'active', '');
+}
+
+function stepMove() {
+  if (moveIdx >= moves.length) return;
+  const m = moves[moveIdx];
+  const disk = pegs[m.from].pop();
+  pegs[m.to].push(disk);
+  moveIdx++;
+  drawScene();
+  updateStats(m);
+  const tag = m.depth === 0 ? 'tag-iter' : 'tag-rec';
+  const label = m.depth === 0 ? 'base call' : 'depth ' + m.depth;
+  addLog('Move ' + moveIdx + ': disk ' + m.disk + ' → ' + ['A','B','C'][m.from] + ' to ' + ['A','B','C'][m.to], 'active', label, tag);
+  if (moveIdx >= moves.length) {
+    stopAuto();
+    btnStep.disabled = true;
+    btnAuto.disabled = true;
+    addLog('✓ Done in ' + moves.length + ' moves.', 'active', '');
+  }
+}
+
+function updateStats(m) {
+  sMov.textContent = moveIdx;
+  sDep.textContent = m ? m.depth : 0;
+  sSta.textContent = m ? m.depth + 1 : 0;
+}
+
+function addLog(text, cls, tag, tagCls) {
+  const div = document.createElement('div');
+  div.className = 'log-entry ' + (cls || '');
+  if (tag) div.innerHTML = '<span class="tag ' + (tagCls||'tag-rec') + '">' + tag + '</span>' + text;
+  else div.textContent = text;
+  log.prepend(div);
+}
+
+function startAuto() {
+  if (autoTimer) return;
+  btnAuto.textContent = 'Pause';
+  autoTimer = setInterval(() => {
+    if (moveIdx >= moves.length) { stopAuto(); return; }
+    stepMove();
+  }, parseInt(speedSel.value));
+}
+
+function stopAuto() {
+  clearInterval(autoTimer);
+  autoTimer = null;
+  btnAuto.textContent = 'Auto play';
+}
+
+function reset() {
+  stopAuto();
+  N = parseInt(slider.value);
+  pegs = [[], [], []];
+  for (let d = N; d >= 1; d--) pegs[0].push(d);
+  moves = [];
+  moveIdx = 0;
+  drawScene();
+  sMov.textContent = 0;
+  sTot.textContent = Math.pow(2, N) - 1;
+  sDep.textContent = 0;
+  sSta.textContent = 0;
+  log.innerHTML = '';
+  btnStart.disabled = false;
+  btnStep.disabled = true;
+  btnAuto.disabled = true;
+  slider.disabled = false;
+}
+
+slider.addEventListener('input', () => { diskCountEl.textContent = slider.value; sTot.textContent = Math.pow(2, parseInt(slider.value)) - 1; });
+btnStart.addEventListener('click', init);
+btnStep.addEventListener('click', () => { stopAuto(); stepMove(); });
+btnAuto.addEventListener('click', () => { autoTimer ? stopAuto() : startAuto(); });
+btnReset.addEventListener('click', reset);
+speedSel.addEventListener('change', () => { if (autoTimer) { stopAuto(); startAuto(); } });
+
+reset();
+</script>
